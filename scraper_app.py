@@ -167,10 +167,9 @@ fastapi_app = FastAPI()
 )
 @serve.ingress(fastapi_app)
 class WebScraperDeployment:
-    def __init__(self, link_fetcher_handle: DeploymentHandle, content_fetcher_handle: DeploymentHandle, item_transformer_handle: DeploymentHandle):
+    def __init__(self, link_fetcher_handle: DeploymentHandle, content_fetcher_handle: DeploymentHandle):
         self._downstream_link_fetcher_handle = link_fetcher_handle
         self._downstream_content_fetcher_handle = content_fetcher_handle
-        self._downstream_item_transformer_handle = item_transformer_handle
 
 
     @fastapi_app.post("/")
@@ -181,7 +180,7 @@ class WebScraperDeployment:
         # # Create a list of remote calls using a list comprehension
         debug["scraped_links"] = len(scraped_links)
         # for item in scraped_links:
-        test = await self._downstream_item_transformer_handle.remote(item[0])
+        test = await ItemTransformer.remote(scraped_links[0])
         debug["test"] = test
         
         
@@ -214,4 +213,4 @@ class WebScraperDeployment:
         # return {"data": fetched_content}
 
 # ItemTransformer(ContentFetcher.bind())
-web_scraper_app = WebScraperDeployment.bind(LinkFetcher.bind(), ContentFetcher.bind(), ItemTransformer.bind())
+web_scraper_app = WebScraperDeployment.bind(LinkFetcher.bind(), ContentFetcher.bind())
