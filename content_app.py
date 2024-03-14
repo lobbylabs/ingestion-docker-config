@@ -5,13 +5,15 @@ from pydantic import BaseModel
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-
+from selenium.webdriver.remote.webelement import WebElement
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import json
 fastapi_app = FastAPI()
 
 
 class WebContentFetchModel(BaseModel):
     url: str
-
 
 @serve.deployment(
     route_prefix="/v1/content",
@@ -28,7 +30,7 @@ class ContentFetcher:
         self.driver = webdriver.Chrome(options=chrome_options)
         print("init")
 
-    @fastapi_app.post("/v1/content")
+    @fastapi_app.post("/")
     async def fetcher(self, request: WebContentFetchModel):
         print("URL:", request.url)
 
@@ -37,22 +39,11 @@ class ContentFetcher:
         except Exception as e:
             return {"url": request.url, "status": 402, "message": e}
 
-        visible_texts = []
+        root_element = self.driver.find_element(By.XPATH, '//html')
 
-        elements = self.driver.find_elements(By.XPATH, "//*")
+        return {"url": request.url, "content": str(root_element.text)}
 
-        # Iterate through the elements
-        for element in elements:
-            try:
-                if element.is_displayed():
-                    text = element.text.strip()
-                    if text:  # Ensure text is not empty
-                        visible_texts.append(text)
-            except Exception as e:
-                pass
-
-        visible_text = ' '.join(visible_texts)
-        return {"url": request.url, "content": visible_text}
+        
 
 
 app = ContentFetcher.bind()
