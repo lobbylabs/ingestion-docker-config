@@ -22,6 +22,7 @@ from selenium.webdriver.support import expected_conditions as EC
 import json
 from ray.serve.handle import DeploymentHandle, DeploymentResponse
 import uuid
+import ray
 
 class WebScrapeModel(BaseModel):
     depth: int
@@ -68,9 +69,10 @@ class JavaScriptSpider(CrawlSpider):
 
     async def parse_item(self, response):
         item = {
-            'id': uuid.uuid4,
+            'id': uuid.uuid4(),
             'url': response.url,
-            'meta': response.meta
+            'meta': response.meta,
+            'content': None
         }
         yield item
 
@@ -91,6 +93,7 @@ class LinkFetcher:
         processor = Processor(settings=get_project_settings())
         items = processor.run([job])
         # items = dict.fromkeys(processor.run([job]), "id")
+        # items = [json.loads(item) for item in items]
 
         # Format the response
         
@@ -135,7 +138,13 @@ class ContentFetcher:
 
 
 
+@ray.remote
+class ItemTransformer:
+    def __init__(self, content_fetcher_handle: DeploymentHandle):
+        self._downstream_content_fetcher_handle = content_fetcher_handle
 
+    def fetch_content(self, item):
+        return {"test": "test"}
 
 
 
@@ -148,6 +157,7 @@ class WebScrapeRequestModel(BaseModel):
 
 fastapi_app = FastAPI()
 
+
 @serve.deployment(
     route_prefix="/v1/web_scraper",
     ray_actor_options={"num_cpus": .25},
@@ -157,20 +167,51 @@ fastapi_app = FastAPI()
 )
 @serve.ingress(fastapi_app)
 class WebScraperDeployment:
-    def __init__(self, link_fetcher_handle: DeploymentHandle, content_fetcher_handle: DeploymentHandle):
+    def __init__(self, link_fetcher_handle: DeploymentHandle, content_fetcher_handle: DeploymentHandle, item_transformer_handle: DeploymentHandle):
         self._downstream_link_fetcher_handle = link_fetcher_handle
         self._downstream_content_fetcher_handle = content_fetcher_handle
+        self._downstream_item_transformer_handle = item_transformer_handle
+
 
     @fastapi_app.post("/")
     async def root(self, request: WebScrapeRequestModel):
+        debug = {}
         
         scraped_links = await self._downstream_link_fetcher_handle.remote(WebScrapeModel(depth=request.depth, urls = request.urls))
+        # # Create a list of remote calls using a list comprehension
+        debug["scraped_links"] = len(scraped_links)
+        # for item in scraped_links:
+        test = await self._downstream_item_transformer_handle.remote(item[0])
+        debug["test"] = test
         
+        
+        # remote_calls = [ray.get({**item, "content": self._downstream_content_fetcher_handle.remote(item["url"]).result()}) for item in scraped_links]
+        # debug["remote_calls"] = len(remote_calls)
+        # Wait for the remote calls to complete or timeout after 30 seconds
+        # finished, running = ray.wait(remote_calls, num_returns=len(remote_calls), timeout=10)
+        # ray.get(finished)
 
-        content_list = [{**item, "content": (self._downstream_content_fetcher_handle.remote(item["url"]))} for item in scraped_links]
+        # if running:
+        #     debug["running_calls"] = len(running)
+
+        # debug["finished_calls"] = len(finished)
+        # debug["finished_0"] = finished[0]
+        return {"debug": debug, "data": scraped_links}
 
         
-        return {"data": content_list}
+        
+        # print(typeof(scraped_links[0]))
+        # print(scraped_links[0])
+        # scraped_links_object_ids = ray.put(scraped_links)
+        # updated_scraped_links
+
+        # Return as many tasks as possible after giving them 90s to run.
+        # finished, running = ray.wait(running_tasks, num_returns=len(running_tasks), timeout=30)
 
 
-web_scraper_app = WebScraperDeployment.bind(LinkFetcher.bind(), ContentFetcher.bind())
+        # await ray.get([self.append_content.remote(item) for item in scraped_links])
+        
+        # return {"data": fetched_content}
+
+# ItemTransformer(ContentFetcher.bind())
+web_scraper_app = WebScraperDeployment.bind(LinkFetcher.bind(), ContentFetcher.bind(), ItemTransformer.bind())
