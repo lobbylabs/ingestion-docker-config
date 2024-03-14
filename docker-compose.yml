@@ -40,7 +40,7 @@ services:
     ipc: host
     # volumes:
     #   - /tmp/web_scraper_ray/:/tmp/ray/
-    command: bash -c "serve run ./web-scraper.yaml"
+    command: bash -c "serve run ./web-scraper-app.yaml"
 
   ingest_cf_tunnel:
     image: cloudflare/cloudflared:latest
