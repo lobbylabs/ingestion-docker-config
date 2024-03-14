@@ -21,6 +21,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import json
 from ray.serve.handle import DeploymentHandle, DeploymentResponse
+import uuid
 
 class WebScrapeModel(BaseModel):
     depth: int
@@ -67,6 +68,7 @@ class JavaScriptSpider(CrawlSpider):
 
     async def parse_item(self, response):
         item = {
+            'id': uuid.uuid4,
             'url': response.url,
             'meta': response.meta
         }
@@ -88,15 +90,17 @@ class LinkFetcher:
                   depth=request.depth)
         processor = Processor(settings=get_project_settings())
         items = processor.run([job])
+        # items = dict.fromkeys(processor.run([job]), "id")
 
         # Format the response
-        response = {"data": items}
-        return response
+        
+        return items
 
 
 
 class WebContentFetchModel(BaseModel):
     url: str
+    id: uuid.UUID
 
 @serve.deployment(
     ray_actor_options={"num_cpus": .25},
@@ -161,13 +165,12 @@ class WebScraperDeployment:
     async def root(self, request: WebScrapeRequestModel):
         
         scraped_links = await self._downstream_link_fetcher_handle.remote(WebScrapeModel(depth=request.depth, urls = request.urls))
+        
 
-
-
-
+        content_list = [{**item, "content": (self._downstream_content_fetcher_handle.remote(item["url"]))} for item in scraped_links]
 
         
-        return {"data": scraped_links}
+        return {"data": content_list}
 
 
 web_scraper_app = WebScraperDeployment.bind(LinkFetcher.bind(), ContentFetcher.bind())
