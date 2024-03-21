@@ -176,7 +176,7 @@ def extract_links(url, max_links_page, same_route, same_domain):
 def find_all_links(start_url, max_depth, current_depth, max_links_page, same_route, same_domain) -> List[FindLinksTaskResultFragment]:
     print(start_url, max_depth, current_depth, max_links_page, same_route, same_domain)
     
-    if depth > max_depth:
+    if current_depth > max_depth:
         return []
 
     links = set(extract_links(start_url, max_links_page, same_route, same_domain))
