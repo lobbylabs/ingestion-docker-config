@@ -4,3 +4,5 @@ scrapy
 selenium
 webdriver-manager
 scrapyscript
+crochet
+bs4

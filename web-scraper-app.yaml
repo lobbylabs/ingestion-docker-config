@@ -36,17 +36,17 @@ applications:
 
   deployments:
 
-  - name: LinkFetcher
-    num_replicas: 10
-    max_concurrent_queries: 20
-    ray_actor_options:
-      num_cpus: 0.25
+  # - name: LinkFetcher
+  #   num_replicas: 10
+  #   max_concurrent_queries: 20
+  #   ray_actor_options:
+  #     num_cpus: 0.25
 
-  - name: ContentFetcher
-    num_replicas: 30
-    max_concurrent_queries: 50
-    ray_actor_options:
-      num_cpus: 0.25
+  # - name: ContentFetcher
+  #   num_replicas: 30
+  #   max_concurrent_queries: 50
+  #   ray_actor_options:
+  #     num_cpus: 0.25
 
   - name: WebScraperDeployment
     num_replicas: 1

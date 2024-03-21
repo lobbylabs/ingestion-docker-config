@@ -7,8 +7,6 @@ import logging
 from scrapy.spiders import CrawlSpider, Rule
 from scrapy.linkextractors import LinkExtractor
 from scrapy.utils.project import get_project_settings
-
-from scrapyscript import Job, Processor
 from ray import serve
 from fastapi import FastAPI
 import os
@@ -23,140 +21,202 @@ import json
 from ray.serve.handle import DeploymentHandle, DeploymentResponse
 import uuid
 import ray
+import time
+from scrapy import signals
+from scrapy.crawler import CrawlerProcess, CrawlerRunner
+from twisted.internet import reactor
+import requests
+from bs4 import BeautifulSoup
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
+import ray
+import json
+import asyncio
+from scrapy import signals
+from scrapy.crawler import CrawlerProcess
+from scrapy.settings import Settings
+from scrapy.spiders import Spider
+from pydantic import BaseModel, HttpUrl
+from typing import List, Optional
+from urllib.parse import urlparse, urljoin
+from typing import Set, List
+from uuid import UUID, uuid4
+from pydantic import BaseModel, Field
+from fastapi import BackgroundTasks, FastAPI
+import requests
 
-class WebScrapeModel(BaseModel):
-    depth: int
-    urls: List[str]
+class ScrapeTask(BaseModel):
+    start_url: str
+    depth: Optional[int] = 1
+    same_route: Optional[bool] = False
+    same_domain: Optional[bool] = False
+    max_links_page: Optional[int] = 20
+    max_links_total: Optional[int] = 200
+    task_id: Optional[str] = str(uuid4())
 
+class FindLinksTask(ScrapeTask):
+    fltph_: Optional[str] = None
 
-class JavaScriptSpider(CrawlSpider):
-    name = 'javascript_spider'
-
-    rules = (
-        Rule(LinkExtractor(deny_domains=['localhost']),
-             callback='parse_item', follow=True),
-    )
-
-    def __init__(self, *args, **kwargs):
-        logger = logging.getLogger("scrapy.spidermiddlewares.depth")
-        logger.setLevel(logging.ERROR)
-        logger2 = logging.getLogger("scrapy.core.scraper")
-        logger2.setLevel(logging.ERROR)
-        logger3 = logging.getLogger("scrapy.core.engine")
-        logger3.setLevel(logging.ERROR)
-        logger4 = logging.getLogger("scrapy.downloadermiddlewares.redirect")
-        logger4.setLevel(logging.ERROR)
-        super().__init__(*args, **kwargs)
-
-    @classmethod
-    def from_crawler(cls, crawler, *args, **kwargs):
-        spider = super().from_crawler(crawler, *args, **kwargs)
-        if "depth" in kwargs:
-            spider.settings.set(
-                "DEPTH_LIMIT", kwargs["depth"], priority="spider"
-            )
-        # spider.settings.set("TWISTED_REACTOR", "twisted.internet.asyncioreactor.AsyncioSelectorReactor", priority="spider")
-        # spider.settings.set(
-        #     "DEPTH_PRIORITY", 1, priority="spider"
-        # )
-        # spider.settings.set(
-        #     "SCHEDULER_DISK_QUEUE", "scrapy.squeues.PickleFifoDiskQueue", priority="spider"
-        # )
-        # spider.settings.set(
-        #     "SCHEDULER_MEMORY_QUEUE", "scrapy.squeues.FifoMemoryQueue", priority="spider"
-        # )
-        return spider
-
-    async def parse_item(self, response):
-        item = {
-            'id': uuid.uuid4(),
-            'url': response.url,
-            'meta': response.meta,
-            'content': None
-        }
-        yield item
-
-
-@serve.deployment(
-    ray_actor_options={"num_cpus": .25},
-    max_concurrent_queries=20,
-    num_replicas=int(os.environ.get("NUM_REPLICAS_LINKS", 10))
-    # max_replicas_per_node=100
-)
-class LinkFetcher:
-    def __init__(self):
-        print("init")
-
-    async def __call__(self, request: WebScrapeModel):
-        job = Job(JavaScriptSpider, start_urls=request.urls,
-                  depth=request.depth)
-        processor = Processor(settings=get_project_settings())
-        items = processor.run([job])
-        # items = dict.fromkeys(processor.run([job]), "id")
-        # items = [json.loads(item) for item in items]
-
-        # Format the response
-        
-        return items
-
-
-
-class WebContentFetchModel(BaseModel):
+class FindLinksTaskResultFragment(BaseModel):
     url: str
-    id: uuid.UUID
+    depth: int
 
-@serve.deployment(
-    ray_actor_options={"num_cpus": .25},
-    max_concurrent_queries=50,
-    num_replicas=int(os.environ.get("NUM_REPLICAS_CONTENT", 30))
-)
-class ContentFetcher:
-    def __init__(self):
-        chrome_options = Options()
-        # Runs Chrome in headless mode.
-        chrome_options.add_argument("--headless")
-        self.driver = webdriver.Chrome(options=chrome_options)
-        print("init")
+class FindLinksTaskResult(FindLinksTask):
+    links: List[FindLinksTaskResultFragment]
 
-    async def __call__(self, request: WebContentFetchModel):
-        print("URL:", request.url)
+class ContentFetchTask(FindLinksTaskResult):
+    cftph_: Optional[str] = None
 
-        try:
-            self.driver.get(request.url)
-        except Exception as e:
-            return {"url": request.url, "status": 402, "message": e}
+class ContentFetchInput(BaseModel):
+    url: str
 
-        root_element = self.driver.find_element(By.XPATH, '//html')
+class ContentFetchOutput(ContentFetchInput):
+    content: Optional[str] = None
+    error: Optional[str] = None
 
-        return {"url": request.url, "content": str(root_element.text)}
-
-
-
-
-
-
+class ContentFetchTaskResult(ContentFetchTask):
+    num_results: int
+    content_fetch_results: List[ContentFetchOutput]
+    
 
 
 
 @ray.remote
-class ItemTransformer:
-    def __init__(self, content_fetcher_handle: DeploymentHandle):
-        self._downstream_content_fetcher_handle = content_fetcher_handle
+class ContentFetcher:
+    def __init__(self):
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        self.driver = webdriver.Chrome(options=chrome_options)
 
-    def fetch_content(self, item):
-        return {"test": "test"}
+    async def fetch_content(self, input: ContentFetchInput) -> ContentFetchOutput:
+        append = {}
+        try:
+            self.driver.get(input.url)
+            root_element = self.driver.find_element(By.XPATH, '//html')
+            append = {"content": str(root_element.text)}
+        except Exception as e:
+            append = {"error": str(e)}
+        finally:
+            return ContentFetchOutput.model_validate({**input.dict(), **append})
+
+
+def get_base_url_with_path(url):
+    """
+    Extracts the base URL along with the path up to a point where it's not a file.
+
+    Parameters:
+    - url (str): The full URL from which to extract the base URL and path.
+
+    Returns:
+    - str: The base URL including the path up to a non-file component.
+    """
+    # Parse the URL to extract its components.
+    parsed_url = urlparse(url)
+    path = parsed_url.path
+    # Check if the path looks like it ends with a file (contains a dot in the last segment)
+    if '.' in path.split('/')[-1]:
+        # Remove the last segment which is considered a file
+        path = '/'.join(path.split('/')[:-1])
+    
+    # Ensure the path ends with a '/' to denote it's a directory, unless the path is empty
+    if path and not path.endswith('/'):
+        path += '/'
+    
+    # Construct the URL including the path up to the last directory
+    base_url_with_path = parsed_url.scheme +parsed_url.netloc + path
+    return base_url_with_path
+
+def normalize_url(url, base_url):
+    """
+    Normalizes a single URL based on a base URL.
+
+    Parameters:
+    - url (str): The URL to normalize. Can be an absolute URL, a relative URL, or a URL fragment.
+    - base_url (str): The base URL to use for normalization of relative URLs and fragments.
+
+    Returns:
+    - str: The normalized URL.
+    """
+    parsed_url = urlparse(url)
+    
+    # Check if the URL is absolute. If it has a scheme (e.g., 'http', 'https'), it's absolute.
+    if parsed_url.scheme:
+        return url
+    else:
+        # For relative URLs and fragments, join them with the base URL.
+        return urljoin(base_url, url)
 
 
 
 
+def extract_links(url, max_links_page, same_route, same_domain):
+    links = []
+    page = requests.get(url)
+    soup = BeautifulSoup(page.content, "html.parser")
+    elements = soup.find_all("a", href=True)
+    # refine how links are retrieved (filter by type?)
+    for element in elements:
+        new_url = element["href"]
+        new_url = normalize_url(new_url, url)
+        parsed_url = urlparse(url)
+        parsed_new_url = urlparse(new_url)
+        if same_route & (get_base_url_with_path(new_url) != get_base_url_with_path(url)):
+            continue
+        if same_domain & (parsed_new_url.netloc != parsed_url.netloc):
+            continue
+        # if (get_base_url_with_path(new_url) == get_base_url_with_path(url)) & urlparse(new_url).fragment == '':
+        #     continue
+        if parsed_new_url.fragment != '':
+            continue
+        # print(get_base_url_with_path(new_url))
+        links.append(new_url)
+    # TODO: refine how max links is determined (filter by quality)
+    return set(links[:max_links_page])
 
-class WebScrapeRequestModel(BaseModel):
-    depth: int
-    urls: List[str]
+def find_all_links(start_url, max_depth, current_depth, max_links_page, same_route, same_domain) -> List[FindLinksTaskResultFragment]:
+    print(start_url, max_depth, current_depth, max_links_page, same_route, same_domain)
+    
+    if depth > max_depth:
+        return []
+
+    links = set(extract_links(start_url, max_links_page, same_route, same_domain))
+    fragments = [FindLinksTaskResultFragment.model_validate({"depth": current_depth, "url": link}) for link in links]
+
+    for url in links:
+        new_links = find_all_links(url, max_depth, current_depth+1, max_links_page, same_route, same_domain)
+        new_fragments = [FindLinksTaskResultFragment.model_validate({"depth": current_depth, "url": link}) for link in new_links]
+        fragments.update(new_fragments)
+
+    return fragments
+
+
+@ray.remote
+def execute_find_links_task(task: FindLinksTask) -> FindLinksTaskResult:
+    return FindLinksTaskResult.model_validate({**task.dict(), "links": find_all_links(task.start_url, task.depth, 0, task.max_links_page, task.same_route, task.same_domain)})
+
+
+@ray.remote
+def execute_fetch_content_task(task: ContentFetchTask) -> ContentFetchTaskResult:
+    content_fetcher_handle = ContentFetcher.remote()
+    start_url_input = ContentFetchInput.model_validate({"url": task.start_url})
+    inputs = [ContentFetchInput.model_validate({"url": link["url"]}) for link in task.links]
+    inputs.append(start_url_input)
+    content_fetch_output_objs = [content_fetcher_handle.fetch_content.remote(input) for input in inputs]
+    content_fetch_outputs: List[ContentFetchTaskResult] = ray.get(content_fetch_output_objs)
+    return ContentFetchTaskResult.model_validate({**task.dict(), "num_results": len(content_fetch_outputs), "content_fetch_results": content_fetch_outputs})
+
+
+
 
 
 fastapi_app = FastAPI()
 
+
+class WebScrapeRequestModel(BaseModel):
+    background: Optional[bool] = False
+    result_url: Optional[str]
+    scrape_tasks: List[ScrapeTask]
+    job_id: Optional[str] = str(uuid4())
 
 @serve.deployment(
     route_prefix="/v1/web_scraper",
@@ -167,50 +227,37 @@ fastapi_app = FastAPI()
 )
 @serve.ingress(fastapi_app)
 class WebScraperDeployment:
-    def __init__(self, link_fetcher_handle: DeploymentHandle, content_fetcher_handle: DeploymentHandle):
-        self._downstream_link_fetcher_handle = link_fetcher_handle
-        self._downstream_content_fetcher_handle = content_fetcher_handle
+    def scrape(self, scrape_request: WebScrapeRequestModel):
+        try:
+            find_link_task_objs = [execute_find_links_task.remote(FindLinksTask.model_validate({**scrape_task.dict()})) for scrape_task in scrape_request.scrape_tasks]
+            find_link_tasks_completed: List[FindLinksTaskResult] = ray.get(find_link_task_objs)
+            # fetch_content_task_objs = [execute_fetch_content_task.remote(ContentFetchTask.model_validate({**link_task.dict()})) for link_task in find_link_tasks_completed]
+            # fetch_content_tasks_completed: List[ContentFetchTaskResult] = ray.get(fetch_content_task_objs)
+        except Exception as e:
+            if scrape_request.background:
+                url = scrape_request.result_url
+                requests.post(url, json={"ERROR": str(e)})
+                pass
+            else: 
+                return {"ERROR": str(e)}
+        finally:
+            if scrape_request.background:
+                url = scrape_request.result_url
+                requests.post(url, json=[task.dict() for task in find_link_tasks_completed])
+                # requests.post(url, json=[task.dict() for task in fetch_content_tasks_completed])
+                pass
+            else: 
+                return find_link_tasks_completed
+                # return fetch_content_tasks_completed
 
 
     @fastapi_app.post("/")
-    async def root(self, request: WebScrapeRequestModel):
-        debug = {}
+    async def root(self, scrape_request: WebScrapeRequestModel, background_tasks: BackgroundTasks):
+
+        if scrape_request.background:
+            background_tasks.add_task(self.scrape, scrape_request)
+            return {"message": "scraping started!", "job_id": scrape_request.job_id}
+        else:
+            return self.scrape( scrape_request)
         
-        scraped_links = await self._downstream_link_fetcher_handle.remote(WebScrapeModel(depth=request.depth, urls = request.urls))
-        # # Create a list of remote calls using a list comprehension
-        debug["scraped_links"] = len(scraped_links)
-        # for item in scraped_links:
-        test = await ItemTransformer.remote(scraped_links[0])
-        debug["test"] = test
-        
-        
-        # remote_calls = [ray.get({**item, "content": self._downstream_content_fetcher_handle.remote(item["url"]).result()}) for item in scraped_links]
-        # debug["remote_calls"] = len(remote_calls)
-        # Wait for the remote calls to complete or timeout after 30 seconds
-        # finished, running = ray.wait(remote_calls, num_returns=len(remote_calls), timeout=10)
-        # ray.get(finished)
-
-        # if running:
-        #     debug["running_calls"] = len(running)
-
-        # debug["finished_calls"] = len(finished)
-        # debug["finished_0"] = finished[0]
-        return {"debug": debug, "data": scraped_links}
-
-        
-        
-        # print(typeof(scraped_links[0]))
-        # print(scraped_links[0])
-        # scraped_links_object_ids = ray.put(scraped_links)
-        # updated_scraped_links
-
-        # Return as many tasks as possible after giving them 90s to run.
-        # finished, running = ray.wait(running_tasks, num_returns=len(running_tasks), timeout=30)
-
-
-        # await ray.get([self.append_content.remote(item) for item in scraped_links])
-        
-        # return {"data": fetched_content}
-
-# ItemTransformer(ContentFetcher.bind())
-web_scraper_app = WebScraperDeployment.bind(LinkFetcher.bind(), ContentFetcher.bind())
+web_scraper_app = WebScraperDeployment.bind()
