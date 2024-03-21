@@ -57,12 +57,13 @@ class ScrapeTask(BaseModel):
 class FindLinksTask(ScrapeTask):
     fltph_: Optional[str] = None
 
-class FindLinksTaskResultFragment(BaseModel):
-    url: str
-    depth: int
+# class FindLinksTaskResultFragment(BaseModel):
+#     url: str
+#     depth: int
 
 class FindLinksTaskResult(FindLinksTask):
-    links: List[FindLinksTaskResultFragment]
+    # links: List[FindLinksTaskResultFragment]
+    links: List[str]
 
 class ContentFetchTask(FindLinksTaskResult):
     cftph_: Optional[str] = None
@@ -81,7 +82,7 @@ class ContentFetchTaskResult(ContentFetchTask):
 
 
 
-@ray.remote
+@ray.remote(num_cpus=.001)
 class ContentFetcher:
     def __init__(self):
         chrome_options = Options()
@@ -97,7 +98,7 @@ class ContentFetcher:
         except Exception as e:
             append = {"error": str(e)}
         finally:
-            return ContentFetchOutput.model_validate({**input.dict(), **append})
+            return ContentFetchOutput.model_validate({**input.model_dump(), **append})
 
 
 def get_base_url_with_path(url):
@@ -148,62 +149,84 @@ def normalize_url(url, base_url):
 
 
 
-
 def extract_links(url, max_links_page, same_route, same_domain):
     links = []
-    page = requests.get(url)
-    soup = BeautifulSoup(page.content, "html.parser")
-    elements = soup.find_all("a", href=True)
-    # refine how links are retrieved (filter by type?)
-    for element in elements:
-        new_url = element["href"]
-        new_url = normalize_url(new_url, url)
-        parsed_url = urlparse(url)
-        parsed_new_url = urlparse(new_url)
-        if same_route & (get_base_url_with_path(new_url) != get_base_url_with_path(url)):
-            continue
-        if same_domain & (parsed_new_url.netloc != parsed_url.netloc):
-            continue
-        # if (get_base_url_with_path(new_url) == get_base_url_with_path(url)) & urlparse(new_url).fragment == '':
-        #     continue
-        if parsed_new_url.fragment != '':
-            continue
-        # print(get_base_url_with_path(new_url))
-        links.append(new_url)
-    # TODO: refine how max links is determined (filter by quality)
+    try:
+        page = requests.get(url)
+        soup = BeautifulSoup(page.content, "html.parser")
+        elements = soup.find_all("a", href=True)
+        # refine how links are retrieved (filter by type?)
+        for element in elements:
+            new_url = element["href"]
+            new_url = normalize_url(new_url, url)
+            parsed_url = urlparse(url)
+            parsed_new_url = urlparse(new_url)
+            if same_route & (get_base_url_with_path(new_url) != get_base_url_with_path(url)):
+                continue
+            if same_domain & (parsed_new_url.netloc != parsed_url.netloc):
+                continue
+            if (get_base_url_with_path(new_url) == get_base_url_with_path(url)) and not urlparse(new_url).fragment:
+                continue
+            # if parsed_new_url.fragment != '':
+            #     continue
+            # print(get_base_url_with_path(new_url))
+            links.append(new_url)
+        # TODO: refine how max links is determined (filter by quality)
+    except Exception as e:
+        print(e)
+        return set()
     return set(links[:max_links_page])
 
-def find_all_links(start_url, max_depth, current_depth, max_links_page, same_route, same_domain) -> List[FindLinksTaskResultFragment]:
-    print(start_url, max_depth, current_depth, max_links_page, same_route, same_domain)
+import itertools
+
+@ray.remote(num_cpus=.001)
+# def find_all_links(start_url, max_depth, current_depth, max_links_page, same_route, same_domain) -> List[FindLinksTaskResultFragment]:
+def find_all_links(start_url, max_depth, current_depth, max_links_page, same_route, same_domain) -> List[str]:
+    print(f'Finding all links with start url {start_url} at depth {current_depth}/{max_depth}')
+    # if all_links is None:
+    #     all_links = set()
+    # if current_depth <= max_depth:
+    #     return []
+
+
+    links = set()
+    links.add(start_url)
+
+    if current_depth >= max_depth:
+        return links
     
-    if current_depth > max_depth:
-        return []
+    # all_links.add(start_url)
+    # links = set([f'{link}TEST' for link in extract_links(start_url, max_links_page, same_route, same_domain)])
+    links.update(extract_links(start_url, max_links_page, same_route, same_domain))
+    # not_seen_links = list(links.difference(all_links))
+    # print(f'not_seen {len(not_seen_links)} links')
+    # seen_links = set(links).intersection(all_links)
+    # print(f'skipping {len(seen_links)} links')
+    # fragments = [FindLinksTaskResultFragment.model_validate({"depth": current_depth, "url": link}) for link in links]
+    new_link_lists = ray.get([find_all_links.remote(link, max_depth, current_depth+1, max_links_page, same_route, same_domain) for link in list(links)])
+    # print(new_link_lists)
+        # new_fragments = [FindLinksTaskResultFragment.model_validate({"depth": current_depth, "url": link}) for link in new_links]
+        # fragments.update(new_fragments)
+    links.update(*new_link_lists)
+    return links
+    # return fragments
 
-    links = set(extract_links(start_url, max_links_page, same_route, same_domain))
-    fragments = [FindLinksTaskResultFragment.model_validate({"depth": current_depth, "url": link}) for link in links]
 
-    for url in links:
-        new_links = find_all_links(url, max_depth, current_depth+1, max_links_page, same_route, same_domain)
-        new_fragments = [FindLinksTaskResultFragment.model_validate({"depth": current_depth, "url": link}) for link in new_links]
-        fragments.update(new_fragments)
-
-    return fragments
-
-
-@ray.remote
+@ray.remote(num_cpus=.001)
 def execute_find_links_task(task: FindLinksTask) -> FindLinksTaskResult:
-    return FindLinksTaskResult.model_validate({**task.dict(), "links": find_all_links(task.start_url, task.depth, 0, task.max_links_page, task.same_route, task.same_domain)})
+    links = ray.get(find_all_links.remote(task.start_url, task.depth, 0, task.max_links_page, task.same_route, task.same_domain))
+    return FindLinksTaskResult.model_validate({**task.model_dump(), "links": links})
 
 
-@ray.remote
+@ray.remote(num_cpus=.001)
 def execute_fetch_content_task(task: ContentFetchTask) -> ContentFetchTaskResult:
-    content_fetcher_handle = ContentFetcher.remote()
     start_url_input = ContentFetchInput.model_validate({"url": task.start_url})
-    inputs = [ContentFetchInput.model_validate({"url": link["url"]}) for link in task.links]
+    inputs = [ContentFetchInput.model_validate({"url": link}) for link in task.links]
+    # inputs = [ContentFetchInput.model_validate({"url": link["url"]}) for link in task.links]
     inputs.append(start_url_input)
-    content_fetch_output_objs = [content_fetcher_handle.fetch_content.remote(input) for input in inputs]
+    content_fetch_output_objs = [ContentFetcher.fetch_content.remote(input) for input in inputs]
     content_fetch_outputs: List[ContentFetchTaskResult] = ray.get(content_fetch_output_objs)
-    return ContentFetchTaskResult.model_validate({**task.dict(), "num_results": len(content_fetch_outputs), "content_fetch_results": content_fetch_outputs})
+    return ContentFetchTaskResult.model_validate({**task.model_dump(), "num_results": len(content_fetch_outputs), "content_fetch_results": content_fetch_outputs})
 
 
 
@@ -229,10 +252,10 @@ class WebScrapeRequestModel(BaseModel):
 class WebScraperDeployment:
     def scrape(self, scrape_request: WebScrapeRequestModel):
         try:
-            find_link_task_objs = [execute_find_links_task.remote(FindLinksTask.model_validate({**scrape_task.dict()})) for scrape_task in scrape_request.scrape_tasks]
+            find_link_task_objs = [execute_find_links_task.remote(FindLinksTask.model_validate({**scrape_task.model_dump()})) for scrape_task in scrape_request.scrape_tasks]
             find_link_tasks_completed: List[FindLinksTaskResult] = ray.get(find_link_task_objs)
-            # fetch_content_task_objs = [execute_fetch_content_task.remote(ContentFetchTask.model_validate({**link_task.dict()})) for link_task in find_link_tasks_completed]
-            # fetch_content_tasks_completed: List[ContentFetchTaskResult] = ray.get(fetch_content_task_objs)
+            fetch_content_task_objs = [execute_fetch_content_task.remote(ContentFetchTask.model_validate({**link_task.dict()})) for link_task in find_link_tasks_completed]
+            fetch_content_tasks_completed: List[ContentFetchTaskResult] = ray.get(fetch_content_task_objs)
         except Exception as e:
             if scrape_request.background:
                 url = scrape_request.result_url
@@ -243,12 +266,12 @@ class WebScraperDeployment:
         finally:
             if scrape_request.background:
                 url = scrape_request.result_url
-                requests.post(url, json=[task.dict() for task in find_link_tasks_completed])
-                # requests.post(url, json=[task.dict() for task in fetch_content_tasks_completed])
+                # requests.post(url, json=[task.dict() for task in find_link_tasks_completed])
+                requests.post(url, json=[task.dict() for task in fetch_content_tasks_completed])
                 pass
             else: 
-                return find_link_tasks_completed
-                # return fetch_content_tasks_completed
+                # return find_link_tasks_completed
+                return fetch_content_tasks_completed
 
 
     @fastapi_app.post("/")
@@ -258,6 +281,6 @@ class WebScraperDeployment:
             background_tasks.add_task(self.scrape, scrape_request)
             return {"message": "scraping started!", "job_id": scrape_request.job_id}
         else:
-            return self.scrape( scrape_request)
+            return self.scrape(scrape_request)
         
 web_scraper_app = WebScraperDeployment.bind()

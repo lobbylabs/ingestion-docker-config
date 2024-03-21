@@ -10,6 +10,7 @@ selenium = "*"
 webdriver-manager = "*"
 scrapyscript = "*"
 ray = {extras = ["default"], version = "*"}
+bs4 = "*"
 
 [dev-packages]
 autopep8 = "*"
