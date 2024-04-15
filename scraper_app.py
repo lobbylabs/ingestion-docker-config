@@ -89,7 +89,7 @@ class ContentFetcher:
         chrome_options.add_argument("--headless")
         self.driver = webdriver.Chrome(options=chrome_options)
 
-    async def fetch_content(self, input: ContentFetchInput) -> ContentFetchOutput:
+    def fetch_content(self, input: ContentFetchInput) -> ContentFetchOutput:
         append = {}
         try:
             self.driver.get(input.url)
@@ -224,7 +224,8 @@ def execute_fetch_content_task(task: ContentFetchTask) -> ContentFetchTaskResult
     inputs = [ContentFetchInput.model_validate({"url": link}) for link in task.links]
     # inputs = [ContentFetchInput.model_validate({"url": link["url"]}) for link in task.links]
     inputs.append(start_url_input)
-    content_fetch_output_objs = [ContentFetcher.fetch_content.remote(input) for input in inputs]
+    content_fetcher_handle = ContentFetcher.remote()
+    content_fetch_output_objs = [content_fetcher_handle.fetch_content.remote(input) for input in inputs]
     content_fetch_outputs: List[ContentFetchTaskResult] = ray.get(content_fetch_output_objs)
     return ContentFetchTaskResult.model_validate({**task.model_dump(), "num_results": len(content_fetch_outputs), "content_fetch_results": content_fetch_outputs})
 
@@ -236,6 +237,7 @@ fastapi_app = FastAPI()
 
 
 class WebScrapeRequestModel(BaseModel):
+    context: Optional[str] = None
     background: Optional[bool] = False
     result_url: Optional[str]
     scrape_tasks: List[ScrapeTask]
@@ -267,15 +269,20 @@ class WebScraperDeployment:
             if scrape_request.background:
                 url = scrape_request.result_url
                 # requests.post(url, json=[task.dict() for task in find_link_tasks_completed])
-                requests.post(url, json=[task.dict() for task in fetch_content_tasks_completed])
+                response = scrape_request
+                response.scrape_tasks = [task.dict() for task in fetch_content_tasks_completed]
+                requests.post(url, json=response)
                 pass
             else: 
                 # return find_link_tasks_completed
-                return fetch_content_tasks_completed
+                response = scrape_request
+                response.scrape_tasks = [task.dict() for task in fetch_content_tasks_completed]
+                return response
 
 
     @fastapi_app.post("/")
     async def root(self, scrape_request: WebScrapeRequestModel, background_tasks: BackgroundTasks):
+        print(scrape_request.context)
 
         if scrape_request.background:
             background_tasks.add_task(self.scrape, scrape_request)

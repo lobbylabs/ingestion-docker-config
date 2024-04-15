@@ -1,46 +1,49 @@
 version: "3.7"
 
 services:
-  ray-head:
-    image: rayproject/ray:latest
-    # image: selenium/standalone-chrome
-    # image: local/web-scraper
-    # build: 
-    #   context: .
-    user: root
-    command: ["sh", "-c", "ray start --head; tail -f /dev/null"]
-    ipc: host
-    ports:
-      - "6379:6379"
-      - "8265:8265"
-      - "10001:10001"
-    # volumes:
-    #   - "./requirements.txt:/requirements.txt"
+  # ray-head:
+  #   image: rayproject/ray:latest
+  #   # image: selenium/standalone-chrome
+  #   # image: local/web-scraper
+  #   # build: 
+  #   #   context: .
+  #   user: root
+  #   command: ["sh", "-c", "ray start --head --dashboard-host '0.0.0.0' --dashboard-port 8266; tail -f /dev/null"]
+  #   ipc: host
+  #   ports:
+  #     - "6379:6379"
+  #     - "8266:8266"
+  #     - "10001:10001"
+  #   # volumes:
+  #   #   - "./requirements.txt:/requirements.txt"
 
-  ray-worker:
-    image: rayproject/ray:latest
-    # image: selenium/standalone-chrome
-    # image: local/web-scraper
-    # build: 
-    #   context: .
-    user: root
-    command: ["sh", "-c", "ray start --address ray-head:6379; tail -f /dev/null"]
-    ipc: host
-    # volumes:
-    #   - "./requirements.txt:/requirements.txt"
+  # ray-worker:
+  #   image: rayproject/ray:latest
+  #   # image: selenium/standalone-chrome
+  #   # image: local/web-scraper
+  #   # build: 
+  #   #   context: .
+  #   user: root
+  #   command: ["sh", "-c", "ray start --address ray-head:6379; tail -f /dev/null"]
+  #   ipc: host
+  #   # volumes:
+  #   #   - "./requirements.txt:/requirements.txt"
 
   ray-serve:
     image: local/web-scraper
     build: 
       context: .
     container_name: web-scraper
-    # ports:
+    ports:
     #   - "6379:6379"  # Ray Serve
-      # - "8265:8265"  # Ray Dashboard
+      - "6379:6379"
+      - "8266:8266"
+      - "10001:10001"
     ipc: host
+
     # volumes:
     #   - /tmp/web_scraper_ray/:/tmp/ray/
-    command: bash -c "serve run ./web-scraper-app.yaml"
+    command: bash -c "ray start --head --dashboard-host '0.0.0.0' --dashboard-port 8266; serve run ./web-scraper-app.yaml"
 
   ingest_cf_tunnel:
     image: cloudflare/cloudflared:latest
